@@ -4197,9 +4197,16 @@ namespace {
 
 			TORRENT_ASSERT(i->finished + i->writing <= m_picker->blocks_in_piece(index));
 
-			auto const additional_bytes = std::int64_t(i->finished + i->writing
-				- m_picker->pad_bytes_in_piece(index) / block_size())
+			int const completed_blocks = i->finished + i->writing;
+			int const pad_blocks = m_picker->pad_bytes_in_piece(index) / block_size();
+			int const piece_wanted_bytes = std::max(0
+				, files.piece_size(index) - m_picker->pad_bytes_in_piece(index));
+
+			// block-based accounting may overcount the last (partial) block.
+			// cap the contribution to the amount of non-pad data in this piece.
+			auto additional_bytes = std::int64_t(std::max(0, completed_blocks - pad_blocks))
 				* block_size();
+			additional_bytes = std::min(additional_bytes, std::int64_t(piece_wanted_bytes));
 			TORRENT_ASSERT(additional_bytes >= 0);
 			st.total_done += additional_bytes;
 			if (m_picker->piece_priority(index) > dont_download)
