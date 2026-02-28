@@ -544,10 +544,29 @@ Iter disk_cache::flush_piece_impl(View& view
 	, span<cached_block_entry> const blocks
 	, std::function<void(jobqueue_t, pread_disk_job*)> clear_piece_fun)
 {
-	view.modify(piece_iter, [](cached_piece_entry& e) { TORRENT_ASSERT(!(e.flags & cached_piece_entry::flushing_flag)); e.flags |= cached_piece_entry::flushing_flag; });
 	int const num_blocks = count_jobs(blocks);
 	if (num_blocks <= 0)
+	{
+		// A deferred clear-piece request may be waiting for this piece to become
+		// idle. If there are no pending write jobs and hashing is not in progress,
+		// complete it here.
+		if (piece_iter->clear_piece && !(piece_iter->flags & cached_piece_entry::hashing_flag))
+		{
+			jobqueue_t aborted;
+			pread_disk_job* clear_piece = nullptr;
+			view.modify(piece_iter, [&](cached_piece_entry& e) {
+				clear_piece_impl(e, aborted);
+				clear_piece = std::exchange(e.clear_piece, nullptr);
+			});
+			clear_piece_fun(std::move(aborted), clear_piece);
+		}
 		return std::next(piece_iter);
+	}
+
+	view.modify(piece_iter, [](cached_piece_entry& e) {
+		TORRENT_ASSERT(!(e.flags & cached_piece_entry::flushing_flag));
+		e.flags |= cached_piece_entry::flushing_flag;
+	});
 
 	// blocks may be a subspan of all the blocks in the piece, so when comparing flushed_cursor and hasher_cursor, we need to add the offset.
 	// TODO: pass the block offset as a parameter instead of computing it like this
@@ -634,6 +653,12 @@ Iter disk_cache::flush_piece_impl(View& view
 	TORRENT_ASSERT(count <= blocks.size());
 	if (piece_iter->clear_piece)
 	{
+		// A hasher thread may still be processing block spans from this piece.
+		// Defer clear until hashing has completed to avoid invalidating buffers
+		// that are being hashed.
+		if (piece_iter->flags & cached_piece_entry::hashing_flag)
+			return next_iter;
+
 		jobqueue_t aborted;
 		pread_disk_job* clear_piece = nullptr;
 		view.modify(piece_iter, [&](cached_piece_entry& e) {
