@@ -873,7 +873,12 @@ void disk_cache::flush_storage(std::function<int(bitfield&, span<cached_block_en
 			, blocks, clear_piece_fun);
 
 		TORRENT_ASSERT(!(piece_iter->flags & cached_piece_entry::flushing_flag));
-		TORRENT_ASSERT(!(piece_iter->flags & cached_piece_entry::hashing_flag));
+		// The hasher thread may still be processing spans from this piece.
+		// In release builds, relying on the assert is not sufficient: freeing
+		// or erasing this piece while hashing is active can invalidate buffers
+		// currently being fed into hasher::update().
+		if (piece_iter->flags & cached_piece_entry::hashing_flag)
+			continue;
 		free_piece(*piece_iter);
 		piece_iter = view.erase(piece_iter);
 	}
