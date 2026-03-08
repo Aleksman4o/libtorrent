@@ -29,13 +29,6 @@ struct compare_storage
 	}
 };
 
-bool have_buffers(span<const cached_block_entry> blocks)
-{
-	for (auto const& b : blocks)
-		if (b.buf().data() == nullptr) return false;
-	return true;
-}
-
 bool compute_force_flush(cached_piece_entry const& piece)
 {
 	// piece that are partial on startup won't have the flushed_cursor
@@ -307,18 +300,21 @@ disk_cache::hash_result disk_cache::try_hash_piece(piece_location const loc, pre
 	}
 
 	if ((i->flags & cached_piece_entry::hashing_flag)
-		&& i->hasher_cursor < i->blocks_in_piece
-		&& have_buffers(i->get_blocks().subspan(i->hasher_cursor))
-		)
+		&& i->hasher_cursor < i->blocks_in_piece)
 	{
-		// We're not done hashing yet, let the hashing thread post the
-		// completion once it's done
+		// A hash operation is already in progress for this piece. Queue this
+		// request to complete from the active hasher path instead of posting
+		// an additional read-back hash job. With multiple hashing threads this
+		// avoids excessive read-back pressure and download stalls.
+		if (i->hash_job == nullptr)
+		{
+			view.modify(i, [&](cached_piece_entry& e) { e.hash_job = hash_job; });
+			return hash_result::job_queued;
+		}
 
-		// We don't expect to ever have simultaneous async_hash() requests
-		// for the same piece
-		TORRENT_ASSERT(i->hash_job == nullptr);
-		view.modify(i, [&](cached_piece_entry& e) { e.hash_job = hash_job; });
-		return hash_result::job_queued;
+		// There is already a deferred hash completion attached to this piece.
+		// Fall back to posting a regular hash job for this request.
+		return hash_result::post_job;
 	}
 
 	return hash_result::post_job;
