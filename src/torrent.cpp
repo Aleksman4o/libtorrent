@@ -810,7 +810,7 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 			return;
 		}
 
-		const int piece_size = m_torrent_file->piece_size(piece);
+		const int piece_size = m_torrent_file->piece_size_for_req(piece);
 		const int blocks_in_piece = (piece_size + block_size() - 1) / block_size();
 
 		TORRENT_ASSERT(blocks_in_piece > 0);
@@ -1257,7 +1257,7 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 
 		if (rp->blocks_left == 0)
 		{
-			int size = m_torrent_file->piece_size(r.piece);
+			int size = m_torrent_file->piece_size_for_req(r.piece);
 			if (rp->fail)
 			{
 				m_ses.alerts().emplace_alert<read_piece_alert>(
@@ -1413,10 +1413,13 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 			return;
 
 		// make sure the piece size is correct
-		if (data.size() != std::size_t(m_torrent_file->piece_size(piece)))
-			return;
-
-		add_piece(piece, data.data(), flags);
+		// we check against the v1 piece size as well, for backwards compatibility
+		if (data.size() == std::size_t(m_torrent_file->piece_size_for_req(piece))
+			|| data.size() == std::size_t(m_torrent_file->piece_size(piece)))
+		{
+			data.resize(std::size_t(m_torrent_file->piece_size_for_req(piece)));
+			add_piece(piece, data.data(), flags);
+		}
 	}
 
 	// TODO: 3 there's some duplication between this function and
@@ -1430,7 +1433,7 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		if (piece >= torrent_file().end_piece())
 			return;
 
-		int const piece_size = m_torrent_file->piece_size(piece);
+		int const piece_size = m_torrent_file->piece_size_for_req(piece);
 		int const blocks_in_piece = (piece_size + block_size() - 1) / block_size();
 
 		if (m_deleted) return;
@@ -1560,8 +1563,8 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 	peer_request torrent::to_req(piece_block const& p) const
 	{
 		int const block_offset = p.block_index * block_size();
-		int const block = std::min(torrent_file().piece_size(
-			p.piece_index) - block_offset, block_size());
+		int const piece_sz = torrent_file().piece_size_for_req(p.piece_index);
+		int const block = std::min(piece_sz - block_offset, block_size());
 		TORRENT_ASSERT(block > 0);
 		TORRENT_ASSERT(block <= block_size());
 
@@ -7408,8 +7411,17 @@ namespace {
 			ret.merkle_tree_mask.reserve(num_files);
 			ret.verified_leaf_hashes.clear();
 			ret.verified_leaf_hashes.reserve(num_files);
-			for (auto const& t : m_merkle_trees)
+			for (auto i : m_merkle_trees.range())
 			{
+				if (valid_metadata() && m_torrent_file->layout().pad_file_at(i))
+				{
+					ret.merkle_trees.emplace_back();
+					ret.merkle_tree_mask.emplace_back();
+					ret.verified_leaf_hashes.emplace_back();
+					continue;
+				}
+
+				auto const& t = m_merkle_trees[i];
 				auto [sparse_tree, mask] = t.build_sparse_vector();
 				ret.merkle_trees.emplace_back(std::move(sparse_tree));
 				ret.merkle_tree_mask.emplace_back(std::move(mask));
@@ -7456,6 +7468,8 @@ namespace {
 	void torrent::get_peer_info(std::vector<peer_info>* v)
 	{
 		v->clear();
+		v->reserve(m_connections.size());
+
 		for (auto const* peer : *this)
 		{
 			TORRENT_ASSERT(peer->m_in_use == 1337);
@@ -7486,6 +7500,7 @@ namespace {
 		, span<piece_picker::downloading_piece const> q
 		, std::vector<partial_piece_info>* queue)
 	{
+		queue->reserve(static_cast<std::size_t>(q.size()));
 		const int blocks_per_piece = p.blocks_in_piece(piece_index_t(0));
 		int counter = 0;
 		for (auto i = q.begin(); i != q.end(); ++i, ++counter)
@@ -7501,7 +7516,7 @@ namespace {
 			TORRENT_ASSERT(counter * blocks_per_piece + pi.blocks_in_piece <= int(blk.size()));
 			block_info* blocks = &blk[std::size_t(counter * blocks_per_piece)];
 			pi.blocks = blocks;
-			int const piece_size = ti.piece_size(i->index);
+			int const piece_size = ti.piece_size_for_req(i->index);
 			int idx = -1;
 			for (auto const& info : p.blocks_for_piece(*i))
 			{

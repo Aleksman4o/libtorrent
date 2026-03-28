@@ -147,6 +147,7 @@ namespace {
 		{
 			ret.merkle_trees.reserve(trees.list_size());
 			ret.verified_leaf_hashes.reserve(trees.list_size());
+			ret.merkle_tree_mask.reserve(trees.list_size());
 			for (int i = 0; i < trees.list_size(); ++i)
 			{
 				auto de = trees.list_at(i);
@@ -180,6 +181,10 @@ namespace {
 						ret.verified_leaf_hashes.emplace_back(str.data(), int(str.size()) * 8);
 					}
 				}
+				else
+				{
+					ret.verified_leaf_hashes.emplace_back();
+				}
 
 				if (bdecode_node const mask = de.dict_find_string("mask"))
 				{
@@ -198,7 +203,14 @@ namespace {
 						ret.merkle_tree_mask.emplace_back(str.data(), int(str.size()) * 8);
 					}
 				}
+				else
+				{
+					ret.merkle_tree_mask.emplace_back();
+				}
 			}
+
+			TORRENT_ASSERT(ret.merkle_trees.size() == ret.merkle_tree_mask.size());
+			TORRENT_ASSERT(ret.merkle_tree_mask.size() == ret.verified_leaf_hashes.size());
 		}
 
 		ret.total_uploaded = rd.dict_find_int_value("total_uploaded");

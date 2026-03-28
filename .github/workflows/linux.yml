@@ -276,7 +276,7 @@ jobs:
       - name: run tests (flaky)
         env:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/.asan.suppressions
-        uses: nick-fields/retry@v3
+        uses: nick-fields/retry@v4
         with:
           timeout_minutes: 30
           retry_wait_seconds: 4

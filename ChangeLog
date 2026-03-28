@@ -22,6 +22,12 @@
 	* libtorrent now requires C++17 to build
 	* added support for WebTorrent
 
+2.0.13
+
+	* optimize v2 request sizes
+	* fix socks5 issues
+	* fix issue in loading v2 resume data merkle trees
+
 2.0.12 released
 
 	* fix issue where file priorities could be cleared by force recheck
