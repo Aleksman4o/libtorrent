@@ -631,7 +631,22 @@ Iter disk_cache::flush_piece_impl(View& view
 	TORRENT_ASSERT(l.owns_lock());
 	int const num_blocks = count_jobs(blocks);
 	if (num_blocks <= 0)
+	{
+		// A deferred clear-piece request may be waiting for this piece to become
+		// idle. If there are no pending write jobs and hashing is not in progress,
+		// complete it here.
+		if (piece_iter->clear_piece && !(piece_iter->flags & cached_piece_entry::hashing_flag))
+		{
+			jobqueue_t aborted;
+			disk_job* clear_piece = nullptr;
+			view.modify(piece_iter, [&](cached_piece_entry& e) {
+				clear_piece_impl(e, aborted);
+				clear_piece = std::exchange(e.clear_piece, nullptr);
+			});
+			clear_piece_fun(std::move(aborted), clear_piece);
+		}
 		return std::next(piece_iter);
+	}
 
 	// blocks may be a subspan of all the blocks in the piece, so when comparing flushed_cursor and hasher_cursor, we need to add the offset.
 	// TODO: pass the block offset as a parameter instead of computing it like this
