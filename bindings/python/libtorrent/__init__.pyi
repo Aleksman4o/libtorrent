@@ -4185,6 +4185,7 @@ class AnnounceEntrydict(TypedDict):
     send_stats: NotRequired[bool]
 
 class renamed_files(metaclass=_BoostBaseClass):
+    __instance_size__: int
     def file_path(self, fs: file_storage, index: int, save_path: str = "") -> str:
         """
         file_path( (renamed_files)arg1, (file_storage)fs, (object)index [, (str)save_path='']) -> str :
