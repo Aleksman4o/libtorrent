@@ -111,8 +111,9 @@ int main(int argc, char* argv[])
 
 	std::optional<address> const gateway = aux::get_gateway(*iface, routes);
 
+	aux::session_settings settings;
 	natpmp_callback cb;
-	auto natpmp_handler = std::make_shared<natpmp>(ios, cb, aux::listen_socket_handle{});
+	auto natpmp_handler = std::make_shared<natpmp>(ios, settings, cb, aux::listen_socket_handle{});
 	natpmp_handler->start(*iface, gateway);
 
 	aux::deadline_timer timer(ios);

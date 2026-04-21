@@ -19,7 +19,7 @@ before-all = [
 ]
 test-command = [
   "cd {project}/bindings/python",
-  "python -X dev -m pytest --log-level=DEBUG --log-cli-level=DEBUG",
+  "python -X dev -m pytest -v --log-level=DEBUG --log-cli-level=DEBUG",
   "python -m mypy --config-file mypy-tox.ini tests",
   "python -m pip install -r test-requirements.txt"
 ]
@@ -41,7 +41,7 @@ before-test = "ccache -s"
 select = "*-manylinux_*"
 test-command = [
   "cd {project}/bindings/python",
-  "python -X dev -m pytest --log-level=DEBUG --log-cli-level=DEBUG",
+  "python -X dev -m pytest -v --log-level=DEBUG --log-cli-level=DEBUG",
   "python -m mypy --config-file mypy-tox.ini tests",
   "python -m pip install -r test-requirements.txt"
 ]
@@ -62,7 +62,7 @@ before-test = "ccache -s"
 select = "*-musllinux_*"
 test-command = [
   "cd {project}/bindings/python",
-  "python -X dev -m pytest --log-level=DEBUG --log-cli-level=DEBUG",
+  "python -X dev -m pytest -v --log-level=DEBUG --log-cli-level=DEBUG",
   "python -m mypy --config-file mypy-tox.ini tests",
   "python -m pip install -r test-requirements.txt"
 ]
@@ -86,9 +86,7 @@ before-all = [
 select = "*-win_amd64"
 
 [tool.cibuildwheel.windows]
-# This 'ugly' before-test pulls in all OpenSSL dlls such that all (yes, multiple!) Python interpreters can find them.
-before-test = '''python -c "import glob,shutil;[shutil.copy(f,'C:/Windows/System32') for f in glob.glob('C:/Program Files/OpenSSL/bin/*.dll')]"'''
-test-command = '''bash -c "cd '{project}/bindings/python' && python -m pip install -r test-requirements.txt && python -X dev -m pytest --log-level=DEBUG --log-cli-level=DEBUG && python -m mypy --config-file mypy-tox.ini tests"'''
+test-command = '''bash -c "cd '{project}/bindings/python' && python -m pip install -r test-requirements.txt && python -X dev -m pytest -v --log-level=DEBUG --log-cli-level=DEBUG && python -m mypy --config-file mypy-tox.ini tests"'''
 
 [tool.cibuildwheel.windows.environment]
 BOOST_BUILD_PATH = 'c:/boost/tools/build'
