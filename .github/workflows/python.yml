@@ -2,7 +2,7 @@ name: Python bindings
 
 on:
    push:
-      branches: [ RC_1_2 RC_2_0 master ]
+      branches: [ RC_2_1, master ]
    pull_request:
 
 concurrency:
@@ -48,7 +48,7 @@ jobs:
     #  - setup-python sets up PATH so 'python' and 'python3' point to the
     #    requested version on mac and linux, but on windows it only sets up
     #    'python'.
-    - uses: actions/setup-python@v2
+    - uses: actions/setup-python@v6
       with:
          python-version: ${{ matrix.python-version }}
 

@@ -2,7 +2,7 @@ name: Android
 
 on:
    push:
-      branches: [ RC_2_0 master ]
+      branches: [ RC_2_1, master ]
       paths-ignore:
          - bindings/python/**
    pull_request:
@@ -80,7 +80,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
            submodules: recursive
 

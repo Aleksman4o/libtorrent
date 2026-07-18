@@ -2,7 +2,7 @@ name: Release
 
 on:
    push:
-      branches: [ RC_2_0, RC_2_1, master ]
+      branches: [ RC_2_1, master ]
       tags:
          - 'v[0-9]*.[0-9]*.[0-9]*'
    pull_request:
@@ -58,7 +58,7 @@ jobs:
       - name: build docs and source package
         run: AAFIGURE=~/.local/bin/aafigure RST2HTML=rst2html make dist
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: tarball
           path: libtorrent-rasterbar-*.tar.gz
@@ -69,6 +69,11 @@ jobs:
           cd libtorrent-rasterbar-*/
           b2 install --prefix=test-install-root webtorrent=on
           cat test-install-root/lib/pkgconfig/libtorrent-rasterbar.pc
+
+      - name: test-tarball (installed headers are self-sufficient)
+        run: |
+          cd libtorrent-rasterbar-*/
+          ./tools/check_installed_headers.py test-install-root
 
       - name: test-tarball (b2 tests)
         run: |
@@ -90,7 +95,7 @@ jobs:
          contents: write
 
       steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: tarball
           path: dist

@@ -10752,24 +10752,26 @@ namespace {
 
 		// this section determines whether the torrent is active or not. When it
 		// changes state, it may also trigger the auto-manage logic to reconsider
-		// which torrents should be queued and started. There is a low pass
-		// filter in order to avoid flapping (auto_manage_startup).
-		bool is_inactive = is_inactive_internal();
+		// which torrents should be queued and started.
+		bool const is_inactive = is_inactive_internal();
 
 		if (settings().get_bool(settings_pack::dont_count_slow_torrents))
 		{
-			if (is_inactive != bool(m_inactive) && !m_pending_active_change)
+			if (is_inactive == bool(m_inactive))
 			{
-				int const delay = settings().get_int(settings_pack::auto_manage_startup);
-				m_inactivity_timer.expires_after(seconds(delay));
-				m_inactivity_timer.async_wait([self](error_code const& ec) {
-					self->wrap(&torrent::on_inactivity_tick, ec); });
-				m_pending_active_change = true;
+				if (m_pending_active_change) m_inactivity_timer.cancel();
 			}
-			else if (is_inactive == bool(m_inactive)
-				&& m_pending_active_change)
+			else if (!m_pending_active_change)
 			{
-				m_inactivity_timer.cancel();
+				// becoming inactive is debounced, to avoid flapping.
+				// recovering from inactive is posted immediately (0 delay)
+				int const delay =
+					is_inactive ? settings().get_int(settings_pack::auto_manage_startup) : 0;
+				m_inactivity_timer.expires_after(seconds(delay));
+				ADD_OUTSTANDING_ASYNC("torrent::on_inactivity_tick");
+				m_inactivity_timer.async_wait(
+					[self](error_code const& ec) { self->wrap(&torrent::on_inactivity_tick, ec); });
+				m_pending_active_change = true;
 			}
 		}
 
@@ -10790,6 +10792,8 @@ namespace {
 
 	void torrent::on_inactivity_tick(error_code const& ec) try
 	{
+		COMPLETE_ASYNC("torrent::on_inactivity_tick");
+
 		m_pending_active_change = false;
 
 		if (ec) return;
@@ -11763,12 +11767,14 @@ namespace {
 		need_peer_list();
 		m_peer_list->set_seed(p, s);
 		update_auto_sequential();
+		update_want_peers();
 	}
 
 	void torrent::set_upload_only(torrent_peer* p, bool const s)
 	{
 		need_peer_list();
 		m_peer_list->set_upload_only(p, s);
+		update_want_peers();
 	}
 
 	void torrent::clear_failcount(torrent_peer* p)
@@ -11854,6 +11860,7 @@ namespace {
 		}
 
 		peers_erased(st.erased);
+		update_want_peers();
 	}
 
 	// this call will disconnect any peers whose remote port is < 1024
@@ -11876,6 +11883,7 @@ namespace {
 		}
 
 		peers_erased(st.erased);
+		update_want_peers();
 	}
 
 	void torrent::port_filter_updated()
@@ -11894,6 +11902,7 @@ namespace {
 		}
 
 		peers_erased(st.erased);
+		update_want_peers();
 	}
 
 #ifndef TORRENT_DISABLE_EXTENSIONS

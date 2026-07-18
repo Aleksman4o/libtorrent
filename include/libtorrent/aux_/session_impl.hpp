@@ -165,6 +165,10 @@ namespace aux {
 		listen_socket_t& operator=(listen_socket_t const&) = delete;
 		listen_socket_t& operator=(listen_socket_t&&) = delete;
 
+		// unlike this object's address, never reused by a later, unrelated
+		// listen_socket_t once this one is destroyed.
+		std::uint32_t const id = next_id();
+
 		udp::endpoint get_local_endpoint() override
 		{
 			error_code ec;
@@ -253,6 +257,15 @@ namespace aux {
 		// set to true when we receive an incoming connection from this listen
 		// socket
 		bool incoming_connection = false;
+
+	private:
+		// non-atomic is fine: listen_socket_t is only ever constructed on
+		// the network thread.
+		static std::uint32_t next_id()
+		{
+			static std::uint32_t next = 0;
+			return ++next;
+		}
 	};
 
 		struct TORRENT_EXTRA_EXPORT listen_endpoint_t
@@ -802,8 +815,7 @@ namespace aux {
 			tcp::endpoint bind_outgoing_socket(socket_type& s
 				, address const& remote_address, error_code& ec) const override;
 			bool verify_incoming_interface(address const& addr) const;
-			bool verify_bound_address(address const& addr, bool utp
-				, error_code& ec) override;
+			bool verify_bound_address(address const& addr, bool utp) override;
 
 			bool has_lsd() const override;
 
@@ -1039,6 +1051,10 @@ namespace aux {
 			// since we might be listening on multiple interfaces
 			// we might need more than one listen socket
 			std::vector<std::shared_ptr<listen_socket_t>> m_listen_sockets;
+
+			// avoids a netlink round-trip in verify_bound_address() on every
+			// peer connection; only as fresh as the last reopen_listen_sockets().
+			std::vector<ip_interface> m_cached_interfaces;
 
 			// increment every time we change which sockets we're listening on
 			std::uint32_t m_listen_socket_version = 0;
