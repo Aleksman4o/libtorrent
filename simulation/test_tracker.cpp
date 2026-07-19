@@ -362,10 +362,15 @@ TORRENT_TEST(tracker_connection_pool_per_endpoint)
 	sim::http_server http(tracker_ios, 8080);
 
 	int announces = 0;
+	std::vector<int> requests_per_connection;
 	http.register_handler("/announce",
 		[&](std::string /* method */, std::string /* req */
 			, std::map<std::string, std::string>&) {
 			++announces;
+			int const connection = http.accepted_connections() - 1;
+			if (connection >= int(requests_per_connection.size()))
+				requests_per_connection.resize(connection + 1);
+			++requests_per_connection[connection];
 			std::string const body = "d8:intervali1800e5:peers0:e";
 			return sim::send_response(200, "OK", int(body.size())) + body;
 		});
@@ -376,7 +381,7 @@ TORRENT_TEST(tracker_connection_pool_per_endpoint)
 	pack.set_int(settings_pack::torrent_connect_boost, 0);
 
 	auto ses = std::make_shared<lt::session>(pack, ios0);
-	for (int i = 0; i < 9; ++i)
+	for (int i = 0; i < 10; ++i)
 	{
 		lt::add_torrent_params params = ::create_torrent(
 			i, true, 9, lt::create_torrent::v1_only);
@@ -388,18 +393,23 @@ TORRENT_TEST(tracker_connection_pool_per_endpoint)
 
 	lt::session_proxy zombie;
 	sim::timer t_end(sim, lt::seconds(2), [&](boost::system::error_code const&) {
-		TEST_EQUAL(announces, 9);
+		TEST_EQUAL(announces, 10);
 		TEST_EQUAL(http.accepted_connections(), 3);
+		auto loads = requests_per_connection;
+		std::sort(loads.begin(), loads.end());
+		TEST_CHECK(loads == std::vector<int>({3, 3, 4}));
 		zombie = ses->abort();
 		ses.reset();
 	});
 
 	sim.run();
 
-	// abort sends another nine stopped announces through a separate shutdown
+	// abort sends another ten stopped announces through a separate shutdown
 	// pool, also bounded to three connections.
-	TEST_EQUAL(announces, 18);
+	TEST_EQUAL(announces, 20);
 	TEST_EQUAL(http.accepted_connections(), 6);
+	std::sort(requests_per_connection.begin(), requests_per_connection.end());
+	TEST_CHECK(requests_per_connection == std::vector<int>({3, 3, 3, 3, 4, 4}));
 }
 
 TORRENT_TEST(tracker_coalesce_keepalive_after_error)
@@ -747,6 +757,71 @@ TORRENT_TEST(tracker_connection_rotates_after_max_requests)
 
 	TEST_EQUAL(stopped, 5);
 	TEST_CHECK(http.accepted_connections() >= 3);
+}
+
+TORRENT_TEST(tracker_connection_rotates_at_1000_request_limit)
+{
+	using sim::asio::ip::address_v4;
+	sim::default_config network_cfg;
+	sim::simulation sim{network_cfg};
+	sim::asio::io_context ios0{sim, make_address_v4("10.0.0.1")};
+	sim::asio::io_context web_server{sim, make_address_v4("2.2.2.2")};
+	sim::http_server http(web_server, 8080);
+
+	int started = 0;
+	int stopped = 0;
+	std::vector<int> requests_per_connection;
+	http.register_handler("/announce",
+		[&](std::string /* method */, std::string req, std::map<std::string, std::string>&) {
+			if (req.find("&event=stopped") == std::string::npos)
+				++started;
+			else
+				++stopped;
+
+			int const connection = http.accepted_connections() - 1;
+			if (connection >= int(requests_per_connection.size()))
+				requests_per_connection.resize(connection + 1);
+			++requests_per_connection[connection];
+
+			std::string const body = "d8:intervali1800e5:peers0:e";
+			return sim::send_response(200, "OK", int(body.size())) + body;
+		});
+
+	lt::settings_pack pack = settings();
+	pack.set_str(settings_pack::listen_interfaces, "10.0.0.1:6881");
+	pack.set_int(settings_pack::max_concurrent_http_announces, 1);
+	pack.set_int(settings_pack::max_tracker_connection_requests, 1000);
+	pack.set_int(settings_pack::torrent_connect_boost, 0);
+
+	auto ses = std::make_shared<lt::session>(pack, ios0);
+	for (int i = 0; i < 1001; ++i)
+	{
+		lt::add_torrent_params params = ::create_torrent(
+			i, true, 9, lt::create_torrent::v1_only);
+		params.flags &= ~lt::torrent_flags::auto_managed;
+		params.flags &= ~lt::torrent_flags::paused;
+		params.trackers.push_back("http://2.2.2.2:8080/announce");
+		ses->async_add_torrent(std::move(params));
+	}
+
+	lt::session_proxy zombie;
+	sim::timer t_abort(sim, lt::seconds(150), [&](boost::system::error_code const&) {
+		TEST_EQUAL(started, 1001);
+		TEST_EQUAL(http.accepted_connections(), 2);
+		auto loads = requests_per_connection;
+		std::sort(loads.begin(), loads.end());
+		TEST_CHECK(loads == std::vector<int>({1, 1000}));
+		zombie = ses->abort();
+		ses.reset();
+	});
+
+	sim.run();
+
+	TEST_EQUAL(started, 1001);
+	TEST_EQUAL(stopped, 1001);
+	TEST_EQUAL(http.accepted_connections(), 4);
+	std::sort(requests_per_connection.begin(), requests_per_connection.end());
+	TEST_CHECK(requests_per_connection == std::vector<int>({1, 1, 1000, 1000}));
 }
 
 TORRENT_TEST(tracker_pause_reports_dropped_follower)
