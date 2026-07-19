@@ -176,3 +176,74 @@ TORRENT_TEST(empty_and_num_requests)
 #endif
 	}
 }
+
+TORRENT_TEST(http_connection_limit_is_per_tracker)
+{
+	io_context ios;
+	aux::session_settings sett;
+	sett.set_int(settings_pack::max_concurrent_http_announces, 3);
+	tracker_manager_handler h{ios, sett};
+
+	auto const queue = [&](char const* url)
+	{
+		tracker_request r;
+		r.url = url;
+		h.m_tracker_manager.queue_request(ios, std::move(r), sett);
+	};
+
+	for (int i = 0; i < 8; ++i) queue("http://tracker-one.test/announce");
+	TEST_EQUAL(h.m_tracker_manager.num_requests(), 3);
+
+	for (int i = 0; i < 5; ++i) queue("http://tracker-two.test/announce");
+	TEST_EQUAL(h.m_tracker_manager.num_requests(), 6);
+}
+
+TORRENT_TEST(http_connection_pool_tracks_runtime_limit)
+{
+	io_context ios;
+	aux::session_settings sett;
+	sett.set_int(settings_pack::max_concurrent_http_announces, 1);
+	tracker_manager_handler h{ios, sett};
+
+	auto const queue = [&]
+	{
+		tracker_request r;
+		r.url = "https://tracker.test/announce";
+		h.m_tracker_manager.queue_request(ios, std::move(r), sett);
+	};
+
+	for (int i = 0; i < 4; ++i) queue();
+	TEST_EQUAL(h.m_tracker_manager.num_requests(), 1);
+
+	sett.set_int(settings_pack::max_concurrent_http_announces, 3);
+	queue();
+	queue();
+	TEST_EQUAL(h.m_tracker_manager.num_requests(), 3);
+
+	// Lowering the limit does not tear down active connections or create more.
+	sett.set_int(settings_pack::max_concurrent_http_announces, 1);
+	for (int i = 0; i < 4; ++i) queue();
+	TEST_EQUAL(h.m_tracker_manager.num_requests(), 3);
+}
+
+TORRENT_TEST(http_connection_pool_can_resume_from_zero)
+{
+	io_context ios;
+	aux::session_settings sett;
+	sett.set_int(settings_pack::max_concurrent_http_announces, 0);
+	tracker_manager_handler h{ios, sett};
+
+	auto const queue = [&]
+	{
+		tracker_request r;
+		r.url = "http://tracker.test/announce";
+		h.m_tracker_manager.queue_request(ios, std::move(r), sett);
+	};
+
+	for (int i = 0; i < 4; ++i) queue();
+	TEST_EQUAL(h.m_tracker_manager.num_requests(), 1);
+
+	sett.set_int(settings_pack::max_concurrent_http_announces, 2);
+	queue();
+	TEST_EQUAL(h.m_tracker_manager.num_requests(), 2);
+}

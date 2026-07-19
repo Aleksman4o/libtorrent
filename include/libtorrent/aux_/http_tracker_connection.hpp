@@ -16,6 +16,7 @@ see LICENSE file.
 #include <deque>
 #include <utility>
 #include <cstdint>
+#include <cstddef>
 
 #include "libtorrent/config.hpp"
 #include "libtorrent/peer_id.hpp"
@@ -61,6 +62,7 @@ namespace libtorrent::aux {
 		void prune_followers(bool keep_stopped);
 
 	private:
+		std::size_t pending_requests() const { return 1 + m_followers.size(); }
 
 		std::shared_ptr<http_tracker_connection> shared_from_this()
 		{
