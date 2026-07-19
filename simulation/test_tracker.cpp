@@ -315,6 +315,7 @@ void test_tracker_coalesce_keepalive(bool const disable_reuse)
 
 	lt::settings_pack default_settings = settings();
 	default_settings.set_str(settings_pack::listen_interfaces, "0.0.0.0:6881");
+	default_settings.set_int(settings_pack::max_concurrent_http_announces, 1);
 	default_settings.set_bool(settings_pack::disable_tracker_connection_reuse, disable_reuse);
 	lt::add_torrent_params default_add_torrent;
 
@@ -350,6 +351,56 @@ void test_tracker_coalesce_keepalive(bool const disable_reuse)
 
 TORRENT_TEST(tracker_coalesce_keepalive) { test_tracker_coalesce_keepalive(false); }
 TORRENT_TEST(tracker_coalesce_keepalive_disabled) { test_tracker_coalesce_keepalive(true); }
+
+TORRENT_TEST(tracker_connection_pool_per_endpoint)
+{
+	using sim::asio::ip::address_v4;
+	sim::default_config network_cfg;
+	sim::simulation sim{network_cfg};
+	sim::asio::io_context ios0{sim, make_address_v4("10.0.0.1")};
+	sim::asio::io_context tracker_ios{sim, make_address_v4("2.2.2.2")};
+	sim::http_server http(tracker_ios, 8080);
+
+	int announces = 0;
+	http.register_handler("/announce",
+		[&](std::string /* method */, std::string /* req */
+			, std::map<std::string, std::string>&) {
+			++announces;
+			std::string const body = "d8:intervali1800e5:peers0:e";
+			return sim::send_response(200, "OK", int(body.size())) + body;
+		});
+
+	lt::settings_pack pack = settings();
+	pack.set_str(settings_pack::listen_interfaces, "10.0.0.1:6881");
+	pack.set_int(settings_pack::max_concurrent_http_announces, 3);
+	pack.set_int(settings_pack::torrent_connect_boost, 0);
+
+	auto ses = std::make_shared<lt::session>(pack, ios0);
+	for (int i = 0; i < 9; ++i)
+	{
+		lt::add_torrent_params params = ::create_torrent(
+			i, true, 9, lt::create_torrent::v1_only);
+		params.flags &= ~lt::torrent_flags::auto_managed;
+		params.flags &= ~lt::torrent_flags::paused;
+		params.trackers.push_back("http://2.2.2.2:8080/announce");
+		ses->async_add_torrent(std::move(params));
+	}
+
+	lt::session_proxy zombie;
+	sim::timer t_end(sim, lt::seconds(2), [&](boost::system::error_code const&) {
+		TEST_EQUAL(announces, 9);
+		TEST_EQUAL(http.accepted_connections(), 3);
+		zombie = ses->abort();
+		ses.reset();
+	});
+
+	sim.run();
+
+	// abort sends another nine stopped announces through a separate shutdown
+	// pool, also bounded to three connections.
+	TEST_EQUAL(announces, 18);
+	TEST_EQUAL(http.accepted_connections(), 6);
+}
 
 TORRENT_TEST(tracker_coalesce_keepalive_after_error)
 {
@@ -389,6 +440,7 @@ TORRENT_TEST(tracker_coalesce_keepalive_after_error)
 
 	lt::settings_pack default_settings = settings();
 	default_settings.set_str(settings_pack::listen_interfaces, "0.0.0.0:6881");
+	default_settings.set_int(settings_pack::max_concurrent_http_announces, 1);
 	lt::add_torrent_params default_add_torrent;
 
 	setup_swarm(
@@ -468,6 +520,7 @@ TORRENT_TEST(tracker_stop_announces_pipelined_on_abort)
 
 	lt::settings_pack pack = settings();
 	pack.set_str(settings_pack::listen_interfaces, "10.0.0.1:6881");
+	pack.set_int(settings_pack::max_concurrent_http_announces, 1);
 
 	auto ses = std::make_shared<lt::session>(pack, ios0);
 
@@ -668,6 +721,7 @@ TORRENT_TEST(tracker_connection_rotates_after_max_requests)
 
 	lt::settings_pack pack = settings();
 	pack.set_str(settings_pack::listen_interfaces, "10.0.0.1:6881");
+	pack.set_int(settings_pack::max_concurrent_http_announces, 1);
 	pack.set_int(settings_pack::max_tracker_connection_requests, 2);
 	pack.set_int(settings_pack::torrent_connect_boost, 0);
 
@@ -717,6 +771,7 @@ TORRENT_TEST(tracker_pause_reports_dropped_follower)
 
 	lt::settings_pack pack = settings();
 	pack.set_str(settings_pack::listen_interfaces, "10.0.0.1:6881");
+	pack.set_int(settings_pack::max_concurrent_http_announces, 1);
 	pack.set_int(settings_pack::torrent_connect_boost, 0);
 
 	auto ses = std::make_shared<lt::session>(pack, ios0);
@@ -875,6 +930,7 @@ TORRENT_TEST(ssrf_coalesced_follower)
 
 	lt::settings_pack pack = settings();
 	pack.set_str(settings_pack::listen_interfaces, "10.0.0.1:6881");
+	pack.set_int(settings_pack::max_concurrent_http_announces, 1);
 	pack.set_bool(settings_pack::ssrf_mitigation, true);
 
 	auto ses = std::make_shared<lt::session>(pack, ios0);
@@ -943,6 +999,7 @@ TORRENT_TEST(tracker_queued_counter_counts_coalesced_followers)
 
 	lt::settings_pack pack = settings();
 	pack.set_str(settings_pack::listen_interfaces, "10.0.0.1:6881");
+	pack.set_int(settings_pack::max_concurrent_http_announces, 1);
 	// don't let the initial connect boost make both first announces
 	// high-priority, that's not what this test is about
 	pack.set_int(settings_pack::torrent_connect_boost, 0);
@@ -1049,6 +1106,7 @@ TORRENT_TEST(tracker_high_priority_jumps_follower_queue)
 
 	lt::settings_pack pack = settings();
 	pack.set_str(settings_pack::listen_interfaces, "10.0.0.1:6881");
+	pack.set_int(settings_pack::max_concurrent_http_announces, 1);
 
 	auto ses = std::make_shared<lt::session>(pack, ios0);
 
@@ -2200,8 +2258,8 @@ TORRENT_TEST(clear_error)
 // ahead of an announce that's already waiting in the tracker queue,
 // instead of waiting behind it for a free announce slot.
 //
-// this uses 3 separate single-tracker torrents sharing the session-wide
-// tracker queue:
+// this uses 3 separate single-tracker torrents with connection reuse disabled,
+// so they share the session-wide queue for unpooled requests:
 // - "fast" completes a normal announce right away, so its tracker is no
 //   longer in flight (not "updating") and is eligible to be re-announced
 //   on demand, like any tracker that's already been talked to once.
@@ -2254,8 +2312,9 @@ void test_force_reannounce_high_priority_skips_queue(bool const by_url)
 	asio::io_context ios(sim, make_address_v4("123.0.0.3"));
 	lt::settings_pack sett = settings();
 	sett.set_str(settings_pack::listen_interfaces, "123.0.0.3:6881");
-	// only one HTTP tracker announce may be in flight at a time, so
-	// whichever one doesn't get the slot has to queue
+	sett.set_bool(settings_pack::disable_tracker_connection_reuse, true);
+	// Unpooled requests retain the global connection cap. Only one may be in
+	// flight at a time, so whichever one doesn't get the slot has to queue.
 	sett.set_int(settings_pack::max_concurrent_http_announces, 1);
 	// don't let the initial connect boost make the very first announces
 	// high priority, that would confuse this test

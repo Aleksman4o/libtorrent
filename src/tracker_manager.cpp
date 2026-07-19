@@ -299,21 +299,36 @@ namespace libtorrent::aux {
 
 	void tracker_manager::start_next_queued()
 	{
-		if (m_num_started_http >= m_settings.get_int(settings_pack::max_concurrent_http_announces))
-			return;
-
+		int const limit = std::max(0
+			, m_settings.get_int(settings_pack::max_concurrent_http_announces));
 		auto& seq = m_http_conns.get<0>();
-		auto const i = std::find_if(
-			seq.begin(), seq.end(), [](http_pool_entry const& e) { return !e.started; });
-		if (i == seq.end()) return;
+		for (auto i = seq.begin(); i != seq.end(); ++i)
+		{
+			if (i->started) continue;
 
-		seq.modify(i, [](http_pool_entry& e) { e.started = true; });
-		++m_num_started_http;
-		// this entry's own (base) request is no longer waiting for a socket
-		// slot; any followers already coalesced onto it stay counted until
-		// next_request() promotes each of them in turn.
-		dec_queued_requests();
-		i->conn->start();
+			if (i->key.no_coalesce != 0)
+			{
+				if (m_num_started_unpooled_http >= limit) continue;
+			}
+			else
+			{
+				auto const& by_key = m_http_conns.get<1>();
+				auto const range = by_key.equal_range(i->key);
+				int const started = int(std::count_if(range.first, range.second
+					, [](http_pool_entry const& e) { return e.started; }));
+				if (started >= limit) continue;
+			}
+
+			bool const unpooled = i->key.no_coalesce != 0;
+			auto const con = i->conn;
+			seq.modify(i, [](http_pool_entry& e) { e.started = true; });
+			if (unpooled) ++m_num_started_unpooled_http;
+			// this entry's own (base) request is no longer waiting for a socket
+			// slot; followers stay counted until promoted by next_request().
+			dec_queued_requests();
+			con->start();
+			return;
+		}
 	}
 
 	void tracker_manager::remove_request(aux::http_tracker_connection const* c)
@@ -324,11 +339,12 @@ namespace libtorrent::aux {
 		if (i == by_conn.end()) return;
 
 		bool const was_started = i->started;
+		bool const was_unpooled = i->key.no_coalesce != 0;
 		by_conn.erase(i);
 		if (was_started)
 		{
-			--m_num_started_http;
-			// a socket slot freed up; promote the next queued connection
+			if (was_unpooled) --m_num_started_unpooled_http;
+			// a pool slot freed up; promote the oldest eligible connection
 			start_next_queued();
 		}
 		else
@@ -394,36 +410,101 @@ namespace libtorrent::aux {
 #endif
 		{
 			http_pool_key key = make_pool_key(req);
-
-			// if there is already a connection to this server (started or still
-			// queued), coalesce this request onto it; it will be issued
-			// sequentially over the same keep-alive socket.
-			//
-			// note: if 'existing' is itself still queued (not yet started,
-			// waiting for a socket slot under max_concurrent_http_announces),
-			// a high-priority req only jumps the front of that connection's
-			// own follower FIFO (see http_tracker_connection::queue_request());
-			// it does not bump 'existing' itself to the front of the outer
-			// not-yet-started queue (the 'seq' sequenced index below), so it
-			// still waits for start_next_queued() to reach it in whatever
-			// position it was originally queued at.
+			int const limit = std::max(0
+				, sett.get_int(settings_pack::max_concurrent_http_announces));
 			auto& by_key = m_http_conns.get<1>();
-			auto const existing = by_key.find(key);
-			if (existing != by_key.end())
+
+			if (key.no_coalesce == 0)
 			{
-				existing->conn->queue_request(std::move(req), c);
+				auto range = by_key.equal_range(key);
+				int num_started = 0;
+				auto queued = range.second;
+				for (auto i = range.first; i != range.second; ++i)
+				{
+					if (i->started) ++num_started;
+					else if (queued == range.second) queued = i;
+				}
+
+				// A queued base request may exist after a zero or dynamically
+				// lowered limit. Promote it before assigning this new request.
+				std::shared_ptr<aux::http_tracker_connection> promoted;
+				if (num_started < limit && queued != range.second)
+				{
+					promoted = queued->conn;
+					by_key.modify(queued, [](http_pool_entry& e) { e.started = true; });
+					++num_started;
+					dec_queued_requests();
+				}
+
+				if (num_started >= limit)
+				{
+					// When a limit is lowered, only the first 'limit' existing
+					// connections receive new followers. The excess drain naturally.
+					range = by_key.equal_range(key);
+					auto least_loaded = range.second;
+					std::size_t least_pending = 0;
+					int candidates = 0;
+					for (auto i = range.first; i != range.second && candidates < limit; ++i)
+					{
+						if (!i->started) continue;
+						++candidates;
+						std::size_t const pending = i->conn->pending_requests();
+						if (least_loaded == range.second || pending < least_pending)
+						{
+							least_loaded = i;
+							least_pending = pending;
+						}
+					}
+
+					if (least_loaded != range.second)
+					{
+						least_loaded->conn->queue_request(std::move(req), c);
+						if (promoted) promoted->start();
+						return;
+					}
+
+					// A zero-sized pool has no eligible active connection. Keep one
+					// queued base request and coalesce subsequent requests onto it.
+					if (queued != range.second)
+					{
+						queued->conn->queue_request(std::move(req), c);
+						return;
+					}
+
+					auto con = std::make_shared<aux::http_tracker_connection>(
+						ios, *this, std::move(req), c);
+					auto& seq = m_http_conns.get<0>();
+					if (high_priority)
+						seq.push_front(http_pool_entry{con, std::move(key), false});
+					else
+						seq.push_back(http_pool_entry{con, std::move(key), false});
+					inc_queued_requests();
+					return;
+				}
+
+				if (promoted) promoted->start();
+				// There is room in this endpoint's pool. The current request opens
+				// another connection instead of waiting for a backlog threshold.
+				auto con = std::make_shared<aux::http_tracker_connection>(
+					ios, *this, std::move(req), c);
+				m_http_conns.get<0>().push_back(
+					http_pool_entry{con, std::move(key), true});
+				con->start();
 				return;
 			}
 
+			// Requests that deliberately disable reuse (or cannot be keyed safely)
+			// retain the old global cap rather than creating an unbounded number of
+			// one-entry pools.
 			auto con = std::make_shared<aux::http_tracker_connection>(ios, *this, std::move(req), c);
 			bool const start_now =
-				m_num_started_http < sett.get_int(settings_pack::max_concurrent_http_announces);
+				m_num_started_unpooled_http < limit;
 
 			auto& seq = m_http_conns.get<0>();
 			if (start_now)
 			{
 				seq.push_back(http_pool_entry{con, std::move(key), true});
-				++m_num_started_http;
+				++m_num_started_unpooled_http;
 				con->start();
 			}
 			else
